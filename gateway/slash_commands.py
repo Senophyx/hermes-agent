@@ -4270,6 +4270,32 @@ class GatewaySlashCommandsMixin:
             logger.warning("Skills reload failed: %s", e)
             return t("gateway.reload_skills.failed", error=e)
 
+    async def _handle_reload_plugins_command(self, event: MessageEvent) -> str:
+        """Handle /reload-plugins — rescan ~/.hermes/plugins/ and reload plugin state.
+
+        Calls discover_plugins(force=True) which clears the existing PluginManager
+        state and re-loads everything from disk. Does NOT clear the prompt cache
+        — plugin hooks integrate into existing call sites and tools are resolved
+        at dispatch time, so prefix caching stays intact.
+        """
+        loop = asyncio.get_running_loop()
+        try:
+            from hermes_cli.plugins import discover_plugins, get_plugin_manager
+            
+            await loop.run_in_executor(None, lambda: discover_plugins(force=True))
+            manager = get_plugin_manager()
+            total = len(manager._plugins)
+            enabled = sum(1 for p in manager._plugins.values() if p.enabled)
+            
+            lines = [
+                "🔄 **Plugins reloaded**",
+                f"    {total} plugin(s) found, {enabled} enabled",
+            ]
+            return "\n".join(lines)
+        except Exception as e:
+            logger.warning("Plugins reload failed: %s", e)
+            return f"❌ Plugins reload failed: {e}"
+    
     async def _handle_bundles_command(self, event: MessageEvent) -> str:
         """Handle /bundles — list installed skill bundles.
 

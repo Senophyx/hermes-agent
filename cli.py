@@ -8670,6 +8670,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         elif canonical == "reload-skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._reload_skills()
+        elif canonical == "reload-plugins":
+            self._reload_plugins()
         elif canonical == "bundles":
             self._handle_bundles_command(cmd_original)
         elif canonical == "browser":
@@ -10832,6 +10834,34 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         except Exception as e:
             print(f"  ❌ Skills reload failed: {e}")
+            
+    def _reload_plugins(self) -> None:
+        """Reload plugins: rescan ~/.hermes/plugins/ and re-register all plugins.
+
+        Calls discover_plugins(force=True) which clears the existing plugin
+        manager state and re-loads everything from disk. Does NOT clear the
+        prompt cache — plugin hooks hook into existing call sites and tools
+        are resolved at dispatch time, so prefix caching stays intact.
+        """
+        
+        try:
+            from hermes_cli.plugins import discover_plugins, get_plugin_manager
+            
+            if not self._command_running:
+                print("🔄 Reloading plugins...")
+                
+            discover_plugins(force=True)
+            manager = get_plugin_manager()
+            total = len(manager._plugins)
+            enabled = sum(1 for p in manager._plugins.values() if p.enabled)
+            
+            print(f"  ✅ {total} plugin(s) found, {enabled} enabled")
+            
+            # Re-register plugin slash commands so they're available immediately
+            self._plugin_commands = manager._plugin_commands
+            
+        except Exception as e:
+            print(f"  ❌ Plugins reload failed: {e}")
 
     # ====================================================================
     # Tool-call generation indicator (shown during streaming)

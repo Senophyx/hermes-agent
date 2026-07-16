@@ -4153,6 +4153,10 @@ class DiscordAdapter(BasePlatformAdapter):
         @tree.command(name="reload-skills", description="Re-scan ~/.hermes/skills/ for new or removed skills")
         async def slash_reload_skills(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/reload-skills")
+            
+        @tree.command(name="reload-plugins", description="Re-scan ~/.hermes/plugins/ and reload plugin state")
+        async def slash_reload_plugins(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/reload-plugins")
 
         @tree.command(name="voice", description="Toggle voice reply mode")
         @discord.app_commands.describe(mode="Voice mode: join, channel, leave, on, tts, off, or status")
