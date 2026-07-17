@@ -4315,11 +4315,25 @@ class GatewaySlashCommandsMixin:
                         
                     enabled_user_count += 1
                     try:
+                        # Clean up existing hooks for this plugin before reloading
+                        # to prevent duplicate hooks (e.g. double <guardrails>).
+                        # We identify hooks belonging to this plugin by matching the module path.
+                        try:
+                            _mod_name = manager._plugin_modules.get(_plugin_id)
+                            if _mod_name:
+                                for h_name, cb_list in list(manager._hooks.items()):
+                                    manager._hooks[h_name] = [
+                                        cb for cb in cb_list 
+                                        if getattr(cb, "__module__", "") != _mod_name
+                                    ]
+                        except Exception as _clear_exc:
+                            logger.debug("Failed to clean up old hooks for %s: %s", _plugin_id, _clear_exc)
+
+                        # This safely calls importlib.reload() on the specific user module
                         manager._load_plugin(manifest)
                         reloaded_count += 1
                     except Exception as e:
                         logger.error(f"Failed to reload user plugin {manifest.name}: {e}")
-                
                 # Evict active agent cache so running WhatsApp/Discord sessions
                 # fetch the new hooks instead of getting stuck on old state.
                 try:
