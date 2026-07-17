@@ -4273,25 +4273,75 @@ class GatewaySlashCommandsMixin:
     async def _handle_reload_plugins_command(self, event: MessageEvent) -> str:
         """Handle /reload-plugins — rescan ~/.hermes/plugins/ and reload plugin state.
 
-        Calls discover_plugins(force=True) which clears the existing PluginManager
-        state and re-loads everything from disk. Does NOT clear the prompt cache
-        — plugin hooks integrate into existing call sites and tools are resolved
-        at dispatch time, so prefix caching stays intact.
+        Safely reloads ONLY user plugins from ~/.hermes/plugins/ without calling
+        discover_plugins(force=True), avoiding active socket platform deadlocks in the
+        gateway daemon. Then evicts the agent cache so active sessions pick up the new hooks.
         """
         loop = asyncio.get_running_loop()
+        
+        from hermes_constants import get_hermes_home
+        current_home = get_hermes_home()
+        
+        def _do_reload():
+            from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+            _token = set_hermes_home_override(current_home)
+
+            try:
+                from hermes_cli.plugins import get_plugin_manager, _get_enabled_plugins, _get_disabled_plugins
+                manager = get_plugin_manager()
+                
+                # FIX: Safely reload only user plugins from the home directory,
+                # avoiding a fatal gateway deadlock from importlib.reload()ing active 
+                # platform sockets (e.g. discord, whatsapp).
+                import logging
+                logger = logging.getLogger(__name__)
+                
+                user_dir = current_home / "plugins"
+                user_manifests = manager._scan_directory(user_dir, source="user")
+                
+                reloaded_count = 0
+                enabled_user_count = 0
+                
+                enabled = _get_enabled_plugins()
+                disabled = _get_disabled_plugins()
+                
+                for manifest in user_manifests:
+                    _plugin_id = manifest.key or manifest.name
+                    # Same logic used by discover_and_load_inner
+                    if disabled is not None and _plugin_id in disabled:
+                        continue
+                    if enabled is not None and _plugin_id not in enabled:
+                        continue
+                        
+                    enabled_user_count += 1
+                    try:
+                        manager._load_plugin(manifest)
+                        reloaded_count += 1
+                    except Exception as e:
+                        logger.error(f"Failed to reload user plugin {manifest.name}: {e}")
+                
+                # Evict active agent cache so running WhatsApp/Discord sessions
+                # fetch the new hooks instead of getting stuck on old state.
+                try:
+                    _cache = getattr(self, "_agent_cache", None)
+                    _cache_lock = getattr(self, "_agent_cache_lock", None)
+                    if _cache_lock is not None and _cache:
+                        with _cache_lock:
+                            _cache.clear()
+                except Exception as _exc:
+                    logger.debug("Failed to evict cached agents: %s", _exc)
+                
+                lines = [
+                    "🔄 **User Plugins reloaded**",
+                    f"    {reloaded_count} user plugin(s) reloaded, {enabled_user_count} enabled",
+                    "    *(All active sessions will automatically rebuild on their next message)*"
+                ]
+                return "\n".join(lines)
+            finally:
+                reset_hermes_home_override(_token)
+                
         try:
-            from hermes_cli.plugins import discover_plugins, get_plugin_manager
-            
-            await loop.run_in_executor(None, lambda: discover_plugins(force=True))
-            manager = get_plugin_manager()
-            total = len(manager._plugins)
-            enabled = sum(1 for p in manager._plugins.values() if p.enabled)
-            
-            lines = [
-                "🔄 **Plugins reloaded**",
-                f"    {total} plugin(s) found, {enabled} enabled",
-            ]
-            return "\n".join(lines)
+            return await loop.run_in_executor(None, _do_reload)
         except Exception as e:
             logger.warning("Plugins reload failed: %s", e)
             return f"❌ Plugins reload failed: {e}"
