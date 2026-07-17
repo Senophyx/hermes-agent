@@ -783,6 +783,13 @@ def run_conversation(
                 repaired_seq,
                 agent.session_id or "-",
             )
+            # FIX: If messages list was compacted, current_turn_user_idx is now out of bounds
+            # or pointing to the wrong message. We MUST re-find the last user message index
+            # to safely inject the plugin hooks!
+            for _i in range(len(messages) - 1, -1, -1):
+                if messages[_i].get("role") == "user":
+                    current_turn_user_idx = _i
+                    break
 
         api_messages = []
         for idx, msg in enumerate(messages):
@@ -805,6 +812,7 @@ def run_conversation(
                     _base = api_msg.get("content", "")
                     if isinstance(_base, str):
                         api_msg["content"] = _base + "\n\n" + "\n\n".join(_injections)
+                        logger.warning(f"[DEBUG-LOOP] Injected into msg idx {idx}! Base length: {len(_base)}, Injections count: {len(_injections)}")
 
             # For ALL assistant messages, pass reasoning back to the API
             # This ensures multi-turn reasoning context is preserved
