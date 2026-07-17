@@ -4269,6 +4269,97 @@ class GatewaySlashCommandsMixin:
         except Exception as e:
             logger.warning("Skills reload failed: %s", e)
             return t("gateway.reload_skills.failed", error=e)
+        
+    async def _handle_reload_plugins_command(self, event: MessageEvent) -> str:
+        """Handle /reload-plugins — rescan ~/.hermes/plugins/ and reload plugin state.
+
+        Safely reloads ONLY user plugins from ~/.hermes/plugins/ without calling
+        discover_plugins(force=True), avoiding active socket platform deadlocks in the
+        gateway daemon. Evicts the agent cache so active sessions pick up the new hooks.
+        """
+        loop = asyncio.get_running_loop()
+        
+        from hermes_constants import get_hermes_home
+        current_home = get_hermes_home()
+        
+        def _do_reload():
+            from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+            _token = set_hermes_home_override(current_home)
+            
+            try:
+                from hermes_cli.plugins import get_plugin_manager, _get_enabled_plugins, _get_disabled_plugins
+                import logging
+                manager = get_plugin_manager()
+                logger = logging.getLogger(__name__)
+                
+                user_dir = current_home / "plugins"
+                user_manifests = manager._scan_directory(user_dir, source="user")
+                
+                reloaded_count = 0
+                enabled_user_count = 0
+                reloaded_names = []
+                enabled = _get_enabled_plugins()
+                disabled = _get_disabled_plugins()
+                
+                for manifest in user_manifests:
+                    _plugin_id = manifest.key or manifest.name
+                    if disabled is not None and _plugin_id in disabled:
+                        continue
+                    if enabled is not None and _plugin_id not in enabled:
+                        continue
+                    
+                    enabled_user_count += 1
+                    try:
+                        # Clean up existing hooks for this plugin before reloading
+                        try:
+                            _loaded_plugin = manager._plugins.get(_plugin_id)
+                            if _loaded_plugin and _loaded_plugin.module:
+                                _mod_name = _loaded_plugin.module.__name__
+                                for h_name, cb_list in list(manager._hooks.items()):
+                                    manager._hooks[h_name] = [
+                                        cb for cb in cb_list
+                                        if getattr(cb, "__module__", "") != _mod_name
+                                    ]
+                        except Exception as _clear_exc:
+                            logger.debug("Failed to clean up old hooks for %s: %s", _plugin_id, _clear_exc)
+                            
+                        manager._load_plugin(manifest)
+                        reloaded_count += 1
+                        reloaded_names.append(manifest.name)
+                    except Exception as e:
+                        logger.error(f"Failed to reload user plugin {manifest.name}: {e}")
+                
+                if reloaded_names:
+                    logger.info("Successfully reloaded %d plugins: %s", len(reloaded_names), ", ".join(reloaded_names))
+                    
+                # Evict active agent cache so running sessions fetch the new hooks
+                try:
+                    _cache = getattr(self, "_agent_cache", None)
+                    _cache_lock = getattr(self, "_agent_cache_lock", None)
+                    if _cache_lock is not None and _cache:
+                        with _cache_lock:
+                            _cache.clear()
+                except Exception as _exc:
+                    logger.warning("Failed to evict cached agents: %s", _exc)
+                    
+                plugins_list_str = "\n".join([f"      - {name}" for name in reloaded_names])
+                lines = [
+                    "🔄 **User Plugins reloaded**",
+                    f"    {reloaded_count} user plugin(s) reloaded, {enabled_user_count} enabled",
+                    plugins_list_str if plugins_list_str else "",
+                    "    *(All active sessions will automatically rebuild on their next message)*"
+                ]
+                return "\n".join(line for line in lines if line.strip())
+            finally:
+                reset_hermes_home_override(_token)
+                
+        try:
+            return await loop.run_in_executor(None, _do_reload)
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning("Plugins reload failed: %s", e)
+            return f"❌ Plugins reload failed: {e}"
 
     async def _handle_bundles_command(self, event: MessageEvent) -> str:
         """Handle /bundles — list installed skill bundles.
