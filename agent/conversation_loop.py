@@ -783,6 +783,12 @@ def run_conversation(
                 repaired_seq,
                 agent.session_id or "-",
             )
+            # Re-find the last user message index since repair might have shrunk the array,
+            # leaving current_turn_user_idx out of bounds.
+            for _i in range(len(messages) - 1, -1, -1):
+                if messages[_i].get("role") == "user":
+                    current_turn_user_idx = _i
+                    break
 
         api_messages = []
         for idx, msg in enumerate(messages):
